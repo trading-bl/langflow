@@ -136,6 +136,9 @@ RUN mkdir -p /app/.npm /opt/app-root/src/.npm \
     && chown -R 1000:0 /app/.npm /opt/app-root/src/.npm \
     && chmod -R g+rwX /app/.npm /opt/app-root/src/.npm
 
+COPY ./docker/langflow-entrypoint.sh /usr/local/bin/langflow-entrypoint
+RUN chmod 0555 /usr/local/bin/langflow-entrypoint
+
 LABEL org.opencontainers.image.title=langflow
 LABEL org.opencontainers.image.authors=['Langflow']
 LABEL org.opencontainers.image.licenses=MIT
@@ -146,9 +149,11 @@ USER user
 WORKDIR /app
 
 ENV LANGFLOW_HOST=0.0.0.0
-ENV LANGFLOW_PORT=7860
+ENV LANGFLOW_PORT=8989
+EXPOSE 8989
 
 # secuirty options
 ENV LANGFLOW_AUTO_LOGIN=false
 
+ENTRYPOINT ["/usr/local/bin/langflow-entrypoint"]
 CMD ["langflow", "run"]
