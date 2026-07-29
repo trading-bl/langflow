@@ -13,6 +13,17 @@ type: kubernetes.io/dockerconfigjson
 data:
   .dockerconfigjson: ${DOCKER_CONFIG_JSON}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: langflow-auth${DOMAIN}
+  namespace: langflow
+type: Opaque
+stringData:
+  # Supply LANGFLOW_SUPERUSER_PASSWORD through the deployment environment or
+  # secret manager before templating this manifest. Never commit the password.
+  password: "${LANGFLOW_SUPERUSER_PASSWORD}"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -43,6 +54,17 @@ spec:
               value: 0.0.0.0
             - name: LANGFLOW_PORT
               value: "8989"
+            - name: LANGFLOW_SUPERUSER
+              value: langflow
+            - name: LANGFLOW_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-auth${DOMAIN}
+                  key: password
+            - name: LANGFLOW_CORS_ORIGINS
+              value: "https://langflow.${DOMAIN}.com"
+            - name: LANGFLOW_CORS_ALLOW_CREDENTIALS
+              value: "true"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
