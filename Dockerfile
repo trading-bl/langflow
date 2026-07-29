@@ -54,8 +54,7 @@ COPY ./src/sdk/pyproject.toml /app/src/sdk/pyproject.toml
 # not require a Dockerfile edit.
 COPY ./src/bundles /app/src/bundles
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    RUSTFLAGS='--cfg reqwest_unstable' \
+RUN RUSTFLAGS='--cfg reqwest_unstable' \
     uv sync --frozen --no-install-project --no-editable --extra couchbase --extra cassio --extra local --extra clickhouse-connect --extra nv-ingest --extra postgresql --no-group dev
 
 COPY ./src /app/src
@@ -65,16 +64,14 @@ WORKDIR /tmp/src/frontend
 # PUPPETEER_SKIP_DOWNLOAD: puppeteer (via accessibility-checker, test-only)
 # must not download Chrome here - the builder image lacks unzip and the
 # production image never runs it.
-RUN --mount=type=cache,target=/root/.npm \
-    PUPPETEER_SKIP_DOWNLOAD=true npm ci \
+RUN PUPPETEER_SKIP_DOWNLOAD=true npm ci \
     && ESBUILD_BINARY_PATH="" NODE_OPTIONS="--max-old-space-size=4096" JOBS=1 npm run build \
     && cp -r build /app/src/backend/langflow/frontend \
     && rm -rf /tmp/src/frontend
 
 WORKDIR /app
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    RUSTFLAGS='--cfg reqwest_unstable' \
+RUN RUSTFLAGS='--cfg reqwest_unstable' \
     uv sync --frozen --no-editable --extra couchbase --extra cassio --extra local --extra clickhouse-connect --extra nv-ingest --extra postgresql --no-group dev
 
 # Use the release workflow's exact wheels when present, while retaining the
