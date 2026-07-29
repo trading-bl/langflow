@@ -1,0 +1,108 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: langflow
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: regcred${DOMAIN}
+  namespace: langflow
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ${DOCKER_CONFIG_JSON}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langflow
+  namespace: langflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langflow
+  template:
+    metadata:
+      labels:
+        app: langflow
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: langflow
+          image: harbor.727th.com/docker-registry/langflow:${IMAGE_TAG}
+          ports:
+            - containerPort: 8989
+          env:
+            - name: ENVIRONMENT_TYPE
+              value: PROD
+            - name: VERSION
+              value: ${IMAGE_TAG}
+            - name: LANGFLOW_HOST
+              value: 0.0.0.0
+            - name: LANGFLOW_PORT
+              value: "8989"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: DOMAIN
+              value: ${DOMAIN}
+      imagePullSecrets:
+        - name: regcred${DOMAIN}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langflow
+  namespace: langflow
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8989
+      protocol: TCP
+  selector:
+    app: langflow
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth2-proxy-middleware
+  namespace: langflow
+spec:
+  forwardAuth:
+    address: https://auth.${DOMAIN}.com/?rd=https%3A%2F%2Flangflow.${DOMAIN}.com
+    trustForwardHeader: true
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: langflow-ingress
+  namespace: langflow
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    - match: Host(`langflow.${DOMAIN}.com`)
+      kind: Rule
+      services:
+        - name: langflow
+          port: 80
+      middlewares:
+        - name: oauth2-proxy-middleware
+  tls:
+    secretName: ${DOMAIN}-com-tls
