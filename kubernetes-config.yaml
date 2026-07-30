@@ -55,7 +55,7 @@ spec:
             - name: LANGFLOW_PORT
               value: "8989"
             - name: LANGFLOW_SUPERUSER
-              value: langflow
+              value: "${LANGFLOW_USER}"
             - name: LANGFLOW_SUPERUSER_PASSWORD
               valueFrom:
                 secretKeyRef:
