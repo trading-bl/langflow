@@ -24,6 +24,140 @@ stringData:
   # secret manager before templating this manifest. Never commit the password.
   password: "${LANGFLOW_SUPERUSER_PASSWORD}"
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: langflow-postgres${DOMAIN}
+  namespace: langflow
+type: Opaque
+stringData:
+  # Supply POSTGRES_PASSWORD through the deployment environment or a secret
+  # manager before templating this manifest. Never commit the password.
+  POSTGRES_USER: langflow
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+  POSTGRES_DB: langflow
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: langflow-postgres
+  namespace: langflow
+spec:
+  serviceName: langflow-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langflow-postgres
+  template:
+    metadata:
+      labels:
+        app: langflow-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-trixie
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-postgres${DOMAIN}
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-postgres${DOMAIN}
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-postgres${DOMAIN}
+                  key: POSTGRES_DB
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langflow-postgres
+  namespace: langflow
+spec:
+  clusterIP: None
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP
+  selector:
+    app: langflow-postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: langflow-qdrant
+  namespace: langflow
+spec:
+  serviceName: langflow-qdrant
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langflow-qdrant
+  template:
+    metadata:
+      labels:
+        app: langflow-qdrant
+    spec:
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:latest
+          ports:
+            - name: http
+              containerPort: 6333
+            - name: grpc
+              containerPort: 6334
+          volumeMounts:
+            - name: qdrant-data
+              mountPath: /qdrant/storage
+  volumeClaimTemplates:
+    - metadata:
+        name: qdrant-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langflow-qdrant
+  namespace: langflow
+spec:
+  ports:
+    - name: http
+      port: 6333
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: 6334
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    app: langflow-qdrant
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -54,6 +188,35 @@ spec:
               value: 0.0.0.0
             - name: LANGFLOW_PORT
               value: "8989"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-postgres${DOMAIN}
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-postgres${DOMAIN}
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-postgres${DOMAIN}
+                  key: POSTGRES_DB
+            - name: POSTGRES_HOST
+              value: langflow-postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: LANGFLOW_DATABASE_CONNECTION_RETRY
+              value: "true"
+            - name: QDRANT_HOST
+              value: langflow-qdrant
+            - name: QDRANT_PORT
+              value: "6333"
+            - name: QDRANT_GRPC_PORT
+              value: "6334"
+            - name: LANGFLOW_SSRF_ALLOWED_HOSTS
+              value: langflow-qdrant
             - name: LANGFLOW_SUPERUSER
               value: "${LANGFLOW_USER}"
             - name: LANGFLOW_SUPERUSER_PASSWORD
