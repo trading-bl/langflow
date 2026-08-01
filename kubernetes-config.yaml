@@ -190,6 +190,10 @@ spec:
               value: 0.0.0.0
             - name: LANGFLOW_PORT
               value: "8989"
+            # Enable Langflow's Workflow API so long-running runs can be
+            # submitted in background mode or consumed as an SSE stream.
+            - name: LANGFLOW_DEVELOPER_API_ENABLED
+              value: "true"
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
