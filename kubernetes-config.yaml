@@ -37,6 +37,20 @@ stringData:
   POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
   POSTGRES_DB: langflow
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: langflow-falkordb${DOMAIN}
+  namespace: langflow
+type: Opaque
+stringData:
+  # FalkorDB is internal-only. The flow reads this URL from the pod environment;
+  # it is not exposed through a LoadBalancer or an IngressRoute.
+  FALKORDB_USERNAME: default
+  FALKORDB_PASSWORD: "FalkorDB-Graph-727th-2026!"
+  FALKORDB_DATABASE: "0"
+  FALKORDB_URL: "redis://default:FalkorDB-Graph-727th-2026%21@langflow-falkordb.langflow.svc.cluster.local:6379/0"
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -161,6 +175,106 @@ spec:
     app: langflow-qdrant
 ---
 apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: langflow-falkordb
+  namespace: langflow
+spec:
+  serviceName: langflow-falkordb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langflow-falkordb
+  template:
+    metadata:
+      labels:
+        app: langflow-falkordb
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: falkordb
+          image: falkordb/falkordb-server:v4.20.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          env:
+            - name: REDIS_ARGS
+              value: >-
+                --requirepass FalkorDB-Graph-727th-2026!
+                --appendonly yes
+                --appendfsync everysec
+                --dir /var/lib/falkordb/data
+                --maxmemory 768mb
+                --maxmemory-policy noeviction
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-falkordb${DOMAIN}
+                  key: FALKORDB_PASSWORD
+          volumeMounts:
+            - name: falkordb-data
+              mountPath: /var/lib/falkordb/data
+          startupProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: falkordb-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: longhorn
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langflow-falkordb
+  namespace: langflow
+spec:
+  clusterIP: None
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP
+  selector:
+    app: langflow-falkordb
+---
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: langflow
@@ -226,7 +340,38 @@ spec:
             - name: QDRANT_GRPC_PORT
               value: "6334"
             - name: LANGFLOW_SSRF_ALLOWED_HOSTS
-              value: langflow-qdrant
+              value: langflow-qdrant,langflow-falkordb
+            - name: FALKORDB_HOST
+              value: langflow-falkordb
+            - name: FALKORDB_PORT
+              value: "6379"
+            - name: FALKORDB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-falkordb${DOMAIN}
+                  key: FALKORDB_USERNAME
+            - name: FALKORDB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-falkordb${DOMAIN}
+                  key: FALKORDB_PASSWORD
+            - name: FALKORDB_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-falkordb${DOMAIN}
+                  key: FALKORDB_DATABASE
+            - name: FALKORDB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-falkordb${DOMAIN}
+                  key: FALKORDB_URL
+            - name: LANGFLOW_FALKORDB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-falkordb${DOMAIN}
+                  key: FALKORDB_URL
+            - name: LANGFLOW_FALKORDB_GRAPH_NAME
+              value: undervalued_stocks_knowledge
             - name: LANGFLOW_SUPERUSER
               value: "${LANGFLOW_USER}"
             - name: LANGFLOW_SUPERUSER_PASSWORD
