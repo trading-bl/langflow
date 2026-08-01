@@ -194,6 +194,10 @@ spec:
             # submitted in background mode or consumed as an SSE stream.
             - name: LANGFLOW_DEVELOPER_API_ENABLED
               value: "true"
+            - name: LANGFLOW_WORKFLOW_EXECUTION_TIMEOUT
+              value: "1800"
+            - name: LANGFLOW_BACKGROUND_JOB_TIMEOUT
+              value: "1800"
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
