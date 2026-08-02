@@ -167,9 +167,7 @@ def _already_sent(client: _RedisConnection, slot: str) -> bool:
     return bool(
         _query(
             client,
-            "MATCH (e:RunStatusEmail {slot: "
-            + _literal(slot)
-            + "}) RETURN e.sent_at AS sent_at LIMIT 1",
+            "MATCH (e:RunStatusEmail {slot: " + _literal(slot) + "}) RETURN e.sent_at AS sent_at LIMIT 1",
         )
     )
 
@@ -242,9 +240,9 @@ def _summary_html(rows: list[dict[str, Any]], now: datetime, slot: str) -> tuple
             f'<p class="stage">{stage}</p>'
             f'<div class="bar"><span style="width:{percent:.1f}%"></span></div>'
             f'<p class="meta">{percent:.1f}% · {completed_batches}/{total_batches or "?"} batches · '
-            f'last checkpoint {html.escape(checkpoint)} UTC</p>'
+            f"last checkpoint {html.escape(checkpoint)} UTC</p>"
             f'<p class="meta">Checkpoint age: {age_hours:.1f} hours</p>'
-            f'<p>{detail}</p>{error_line}'
+            f"<p>{detail}</p>{error_line}"
             "</article>"
         )
     if not cards:
@@ -266,15 +264,13 @@ def _summary_html(rows: list[dict[str, Any]], now: datetime, slot: str) -> tuple
     )
     body = (
         '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
-        "<style>"
-        + style
-        + "</style></head>"
+        "<style>" + style + "</style></head>"
         f'<body><div class="wrap"><main class="email"><header class="hero"><h1>{html.escape(title)}</h1>'
         f'<div class="sub">Durable checkpoint summary · slot {html.escape(slot)} · '
         f'generated {html.escape(now.isoformat())} UTC</div></header><div class="content">'
         + "".join(cards)
         + '</div><footer class="footer">This message reads the independent FalkorDB run ledger. '
-        'It does not execute or modify the stock-analysis workflow.</footer></main></div></body></html>'
+        "It does not execute or modify the stock-analysis workflow.</footer></main></div></body></html>"
     )
     return title, body
 

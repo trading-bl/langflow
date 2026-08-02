@@ -12,7 +12,9 @@ This module owns the run-driving machinery shared by every execution mode:
       response for live streaming.
 
 Configuration:
-    EXECUTION_TIMEOUT: Maximum execution time for synchronous workflows (300 seconds).
+    EXECUTION_TIMEOUT: Fallback maximum execution time (300 seconds) when the
+    settings service cannot be read. ``LANGFLOW_WORKFLOW_EXECUTION_TIMEOUT=0``
+    disables the ceiling for the deployment.
 """
 
 from __future__ import annotations
@@ -52,16 +54,18 @@ from langflow.services.deps import get_job_service, get_memory_base_service, get
 EXECUTION_TIMEOUT = 300  # 5 minutes default timeout for sync execution, used as a fallback
 
 
-def _resolve_execution_timeout() -> int:
+def _resolve_execution_timeout() -> int | None:
     """Wall-clock ceiling for a single workflow run, from settings.
 
     Falls back to ``EXECUTION_TIMEOUT`` if the settings service is unavailable
     (e.g. a fire-and-forget background coroutine running during teardown).
+    A non-positive configured value means that the run is unbounded.
     """
     try:
-        return get_settings_service().settings.workflow_execution_timeout
+        timeout = get_settings_service().settings.workflow_execution_timeout
     except Exception:  # noqa: BLE001
         return EXECUTION_TIMEOUT
+    return timeout if timeout > 0 else None
 
 
 # Inline stream queue between the build loop and the SSE consumer. Bounded
@@ -234,34 +238,35 @@ async def _stream_event_frames(
     async def drive() -> None:
         nonlocal drive_error
         try:
-            await asyncio.wait_for(
-                generate_flow_events(
-                    flow_id=flow_id,
-                    background_tasks=background_tasks,
-                    event_manager=event_manager,
-                    inputs=input_request,
-                    data=flow_data,
-                    files=parsed.files,
-                    stop_component_id=parsed.stop_component_id,
-                    start_component_id=parsed.start_component_id,
-                    # Persist vertex builds (keyed by ``run_id``) only for job-tracked
-                    # runs so a background job's status can be reconstructed later. Live
-                    # streams pass no ``run_id`` and keep the no-persist behavior.
-                    log_builds=run_id is not None,
-                    current_user=current_user,
-                    flow_name=flow_name,
-                    source_flow_id=source_flow_id,
-                    run_id=run_id,
-                    job_id=job_id,
-                    resume=resume,
-                    track_job_status=track_job_status,
-                    # The sync path applies tweaks before Graph construction; this loop
-                    # builds from the DB (or request data), so without this the streaming
-                    # and background paths silently drop request tweaks.
-                    tweaks=parsed.tweaks,
-                ),
-                timeout=execution_timeout,
+            generation = generate_flow_events(
+                flow_id=flow_id,
+                background_tasks=background_tasks,
+                event_manager=event_manager,
+                inputs=input_request,
+                data=flow_data,
+                files=parsed.files,
+                stop_component_id=parsed.stop_component_id,
+                start_component_id=parsed.start_component_id,
+                # Persist vertex builds (keyed by ``run_id``) only for job-tracked
+                # runs so a background job's status can be reconstructed later. Live
+                # streams pass no ``run_id`` and keep the no-persist behavior.
+                log_builds=run_id is not None,
+                current_user=current_user,
+                flow_name=flow_name,
+                source_flow_id=source_flow_id,
+                run_id=run_id,
+                job_id=job_id,
+                resume=resume,
+                track_job_status=track_job_status,
+                # The sync path applies tweaks before Graph construction; this loop
+                # builds from the DB (or request data), so without this the streaming
+                # and background paths silently drop request tweaks.
+                tweaks=parsed.tweaks,
             )
+            if execution_timeout is None:
+                await generation
+            else:
+                await asyncio.wait_for(generation, timeout=execution_timeout)
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
@@ -414,18 +419,19 @@ async def execute_sync_workflow_with_timeout(
         WorkflowValidationError: If flow validation fails
     """
     try:
-        return await asyncio.wait_for(
-            execute_sync_workflow(
-                parsed=parsed,
-                flow=flow,
-                job_id=job_id,
-                current_user=current_user,
-                background_tasks=background_tasks,
-                http_request=http_request,
-                checkpoint_store=checkpoint_store,
-            ),
-            timeout=_resolve_execution_timeout(),
+        execution = execute_sync_workflow(
+            parsed=parsed,
+            flow=flow,
+            job_id=job_id,
+            current_user=current_user,
+            background_tasks=background_tasks,
+            http_request=http_request,
+            checkpoint_store=checkpoint_store,
         )
+        timeout = _resolve_execution_timeout()
+        if timeout is None:
+            return await execution
+        return await asyncio.wait_for(execution, timeout=timeout)
     except asyncio.TimeoutError as e:
         raise WorkflowTimeoutError from e
 

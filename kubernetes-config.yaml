@@ -317,14 +317,22 @@ spec:
               value: 0.0.0.0
             - name: LANGFLOW_PORT
               value: "8989"
-            # Enable Langflow's Workflow API so long-running runs can be
-            # submitted in background mode or consumed as an SSE stream.
+            # Enable Langflow's Workflow API. Long analyses must be submitted
+            # with mode=background; the POST returns immediately and the run
+            # continues independently of the caller's HTTP connection.
             - name: LANGFLOW_DEVELOPER_API_ENABLED
               value: "true"
+            # 0 means no wall-clock ceiling. The workflow engine maps this
+            # deployment value to None, including for background runs.
             - name: LANGFLOW_WORKFLOW_EXECUTION_TIMEOUT
-              value: "1800"
-            - name: LANGFLOW_BACKGROUND_JOB_TIMEOUT
-              value: "1800"
+              value: "0"
+            # A single async worker avoids cross-worker in-memory executor
+            # loss. Gunicorn's 0 disables its worker timeout; Kubernetes still
+            # manages the pod lifecycle independently.
+            - name: LANGFLOW_WORKERS
+              value: "1"
+            - name: LANGFLOW_WORKER_TIMEOUT
+              value: "0"
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:

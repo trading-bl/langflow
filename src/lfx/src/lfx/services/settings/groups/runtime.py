@@ -105,7 +105,8 @@ class RuntimeSettings(BaseModel):
     workflow_execution_timeout: int = 300
     """Wall-clock ceiling in seconds for a single v2 workflow run, applied to every
     execution mode. Sync runs raise a 408; stream, background, and public runs emit
-    the protocol's terminal-error event and (for background) mark the job failed."""
+    the protocol's terminal-error event and (for background) mark the job failed.
+    Set to ``0`` to disable the ceiling."""
 
     public_flow_cleanup_interval: int = Field(default=3600, gt=600)
     """The interval in seconds at which public temporary flows will be cleaned up.

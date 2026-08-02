@@ -23,8 +23,7 @@ from lfx.schema.message import Message
 class RunProgressCheckpoint(Component):
     display_name = "Run Progress Checkpoint"
     description = (
-        "Writes a monotonic, timestamped run-stage checkpoint to FalkorDB "
-        "without changing the analysis payload."
+        "Writes a monotonic, timestamped run-stage checkpoint to FalkorDB without changing the analysis payload."
     )
     icon = "Activity"
     name = "RunProgressCheckpoint"
@@ -66,11 +65,14 @@ class RunProgressCheckpoint(Component):
 
     @staticmethod
     def _graph_name():
-        return re.sub(
-            r"[^A-Za-z0-9_]",
-            "_",
-            os.getenv("LANGFLOW_FALKORDB_GRAPH_NAME", "undervalued_stocks_knowledge"),
-        ) or "undervalued_stocks_knowledge"
+        return (
+            re.sub(
+                r"[^A-Za-z0-9_]",
+                "_",
+                os.getenv("LANGFLOW_FALKORDB_GRAPH_NAME", "undervalued_stocks_knowledge"),
+            )
+            or "undervalued_stocks_knowledge"
+        )
 
     @classmethod
     def _client(cls):
@@ -154,10 +156,7 @@ class RunProgressCheckpoint(Component):
         batches = payload.get("batches") if isinstance(payload.get("batches"), list) else []
         stock_count = sum(len(batch.get("stocks") or []) for batch in batches)
         total_stocks = int(
-            payload.get("requested_stock_count")
-            or payload.get("full_universe_count")
-            or len(stocks)
-            or stock_count
+            payload.get("requested_stock_count") or payload.get("full_universe_count") or len(stocks) or stock_count
         )
         batch_size = int(payload.get("batch_size") or 5)
         calculated_batches = (total_stocks + batch_size - 1) // batch_size if total_stocks else 0
@@ -214,36 +213,52 @@ class RunProgressCheckpoint(Component):
             self._query(
                 client,
                 "MERGE (c:RunCheckpoint {checkpoint_id: " + self._literal(checkpoint_id) + "}) "
-                "SET c.run_id = " + self._literal(run_id)
-                + ", c.stage = " + self._literal(stage)
-                + ", c.stage_order = " + self._literal(stage_order)
-                + ", c.checkpoint_at = " + self._literal(now)
-                + ", c.detail = " + self._literal(detail)
-                + ", c.percent_complete = " + self._literal(percent),
+                "SET c.run_id = "
+                + self._literal(run_id)
+                + ", c.stage = "
+                + self._literal(stage)
+                + ", c.stage_order = "
+                + self._literal(stage_order)
+                + ", c.checkpoint_at = "
+                + self._literal(now)
+                + ", c.detail = "
+                + self._literal(detail)
+                + ", c.percent_complete = "
+                + self._literal(percent),
             )
             if stage_order >= current_order:
                 self._query(
                     client,
                     "MERGE (r:ResearchRun {run_id: " + self._literal(run_id) + "}) "
-                    "ON CREATE SET r.started_at = " + self._literal(now)
-                    + " SET r.status = " + self._literal(status)
-                    + ", r.stage = " + self._literal(stage)
-                    + ", r.stage_order = " + self._literal(stage_order)
-                    + ", r.last_checkpoint_at = " + self._literal(now)
-                    + ", r.total_stocks = " + self._literal(total_stocks)
-                    + ", r.completed_stocks = " + self._literal(completed_stocks)
-                    + ", r.total_batches = " + self._literal(total_batches)
-                    + ", r.completed_batches = " + self._literal(completed_batches)
-                    + ", r.batch_size = " + self._literal(batch_size)
-                    + ", r.percent_complete = " + self._literal(percent)
-                    + ", r.last_batch_index = " + self._literal(completed_batches)
-                    + ", r.detail = " + self._literal(detail)
-                    + ", r.error = " + self._literal("")
-                    + (
-                        ", r.completed_at = " + self._literal(now)
-                        if stage_order >= self.FINAL_STAGE_ORDER
-                        else ""
-                    ),
+                    "ON CREATE SET r.started_at = "
+                    + self._literal(now)
+                    + " SET r.status = "
+                    + self._literal(status)
+                    + ", r.stage = "
+                    + self._literal(stage)
+                    + ", r.stage_order = "
+                    + self._literal(stage_order)
+                    + ", r.last_checkpoint_at = "
+                    + self._literal(now)
+                    + ", r.total_stocks = "
+                    + self._literal(total_stocks)
+                    + ", r.completed_stocks = "
+                    + self._literal(completed_stocks)
+                    + ", r.total_batches = "
+                    + self._literal(total_batches)
+                    + ", r.completed_batches = "
+                    + self._literal(completed_batches)
+                    + ", r.batch_size = "
+                    + self._literal(batch_size)
+                    + ", r.percent_complete = "
+                    + self._literal(percent)
+                    + ", r.last_batch_index = "
+                    + self._literal(completed_batches)
+                    + ", r.detail = "
+                    + self._literal(detail)
+                    + ", r.error = "
+                    + self._literal("")
+                    + (", r.completed_at = " + self._literal(now) if stage_order >= self.FINAL_STAGE_ORDER else ""),
                 )
                 self._query(
                     client,
