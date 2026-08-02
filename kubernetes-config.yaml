@@ -51,6 +51,19 @@ stringData:
   FALKORDB_DATABASE: "0"
   FALKORDB_URL: "redis://default:FalkorDB-Graph-727th-2026%21@langflow-falkordb.langflow.svc.cluster.local:6379/0"
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: langflow-status-reporter${DOMAIN}
+  namespace: langflow
+type: Opaque
+stringData:
+  # Provide these through the deployment environment/secret manager. The
+  # reporter sends only the periodic checkpoint summary; it never runs or
+  # mutates the analysis workflow.
+  EMAIL_API_KEY: "${EMAIL_API_KEY}"
+  EMAIL_RECIPIENT: "${EMAIL_RECIPIENT}"
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -372,6 +385,16 @@ spec:
                   key: FALKORDB_URL
             - name: LANGFLOW_FALKORDB_GRAPH_NAME
               value: undervalued_stocks_knowledge
+            - name: EMAIL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-status-reporter${DOMAIN}
+                  key: EMAIL_API_KEY
+            - name: EMAIL_RECIPIENT
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-status-reporter${DOMAIN}
+                  key: EMAIL_RECIPIENT
             - name: LANGFLOW_SUPERUSER
               value: "${LANGFLOW_USER}"
             - name: LANGFLOW_SUPERUSER_PASSWORD
@@ -399,6 +422,85 @@ spec:
               value: ${DOMAIN}
       imagePullSecrets:
         - name: regcred${DOMAIN}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: langflow-status-reporter
+  namespace: langflow
+spec:
+  # UTC controller time; one report in each 12-hour slot.
+  schedule: "0 */12 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app: langflow-status-reporter
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 0
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reporter
+              image: harbor.727th.com/docker-registry/langflow:${IMAGE_TAG}
+              imagePullPolicy: IfNotPresent
+              command:
+                - python3.14
+                - /usr/local/bin/langflow-run-status-reporter
+              env:
+                - name: FALKORDB_HOST
+                  value: langflow-falkordb
+                - name: FALKORDB_PORT
+                  value: "6379"
+                - name: FALKORDB_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: langflow-falkordb${DOMAIN}
+                      key: FALKORDB_USERNAME
+                - name: FALKORDB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: langflow-falkordb${DOMAIN}
+                      key: FALKORDB_PASSWORD
+                - name: FALKORDB_DATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: langflow-falkordb${DOMAIN}
+                      key: FALKORDB_DATABASE
+                - name: FALKORDB_GRAPH_NAME
+                  value: undervalued_stocks_knowledge
+                - name: EMAIL_API_URL
+                  value: https://email-api.727th.com/api/email/send
+                - name: EMAIL_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: langflow-status-reporter${DOMAIN}
+                      key: EMAIL_API_KEY
+                - name: EMAIL_RECIPIENT
+                  valueFrom:
+                    secretKeyRef:
+                      name: langflow-status-reporter${DOMAIN}
+                      key: EMAIL_RECIPIENT
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+          imagePullSecrets:
+            - name: regcred${DOMAIN}
 ---
 apiVersion: v1
 kind: Service
