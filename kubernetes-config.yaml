@@ -115,7 +115,9 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 256Mi
+            # 256Mi filled up and Postgres began rejecting every write with
+            # DiskFull, which silently killed workflow runs mid-execution.
+            storage: 5Gi
 ---
 apiVersion: v1
 kind: Service
