@@ -108,10 +108,10 @@ spec:
           resources:
             requests:
               cpu: 250m
-              memory: 512Mi
+              memory: 256Mi
             limits:
               cpu: 750m
-              memory: 2Gi
+              memory: 1Gi
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
@@ -175,10 +175,10 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 128Mi
             limits:
               cpu: 500m
-              memory: 1536Mi
+              memory: 512Mi
           volumeMounts:
             - name: qdrant-data
               mountPath: /qdrant/storage
@@ -243,7 +243,7 @@ spec:
                 --appendonly yes
                 --appendfsync everysec
                 --dir /var/lib/falkordb/data
-                --maxmemory 1400mb
+                --maxmemory 900mb
                 --maxmemory-policy noeviction
             - name: REDISCLI_AUTH
               valueFrom:
@@ -283,10 +283,10 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 512Mi
+              memory: 384Mi
             limits:
               cpu: 750m
-              memory: 2Gi
+              memory: 1280Mi
   volumeClaimTemplates:
     - metadata:
         name: falkordb-data
@@ -460,10 +460,10 @@ spec:
           resources:
             requests:
               cpu: 500m
-              memory: 1536Mi
+              memory: 1Gi
             limits:
               cpu: "2"
-              memory: 5Gi
+              memory: 4Gi
       imagePullSecrets:
         - name: regcred${DOMAIN}
 ---
@@ -505,10 +505,10 @@ spec:
               resources:
                 requests:
                   cpu: 50m
-                  memory: 128Mi
+                  memory: 96Mi
                 limits:
                   cpu: 250m
-                  memory: 512Mi
+                  memory: 256Mi
               command:
                 - python3.14
                 - /usr/local/bin/langflow-run-status-reporter
