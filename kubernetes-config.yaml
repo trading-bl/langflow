@@ -104,6 +104,14 @@ spec:
                   key: POSTGRES_DB
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+          # Sized so observed peak stays at or below 80% of the limit.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 750m
+              memory: 2Gi
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
@@ -115,9 +123,14 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            # 256Mi filled up and Postgres began rejecting every write with
-            # DiskFull, which silently killed workflow runs mid-execution.
-            storage: 5Gi
+            # 256Mi filled up and Postgres rejected every write with DiskFull,
+            # which silently killed workflow runs mid-execution. Run history costs
+            # roughly 160Mi per regime run and an estimated 400Mi per stock run, so
+            # a month of daily runs peaks near 17Gi — 71% of this claim.
+            # NOTE: volumeClaimTemplates are immutable. To change this on the live
+            # cluster: kubectl delete statefulset langflow-postgres --cascade=orphan,
+            # then apply, then expand the PVC itself.
+            storage: 24Gi
 ---
 apiVersion: v1
 kind: Service
@@ -158,6 +171,14 @@ spec:
               containerPort: 6333
             - name: grpc
               containerPort: 6334
+          # Sized so observed peak stays at or below 80% of the limit.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1536Mi
           volumeMounts:
             - name: qdrant-data
               mountPath: /qdrant/storage
@@ -169,7 +190,8 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 4Gi
+            # Currently 0.13Gi in use; headroom for embedding growth well under 80%.
+            storage: 8Gi
 ---
 apiVersion: v1
 kind: Service
@@ -221,7 +243,7 @@ spec:
                 --appendonly yes
                 --appendfsync everysec
                 --dir /var/lib/falkordb/data
-                --maxmemory 768mb
+                --maxmemory 1400mb
                 --maxmemory-policy noeviction
             - name: REDISCLI_AUTH
               valueFrom:
@@ -256,13 +278,15 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 3
             failureThreshold: 3
+          # FalkorDB holds the graph in memory; 0.44Gi on disk today, so the limit
+          # keeps peak resident size at or below 80% with room for growth.
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 512Mi
             limits:
-              cpu: "1"
-              memory: 1Gi
+              cpu: 750m
+              memory: 2Gi
   volumeClaimTemplates:
     - metadata:
         name: falkordb-data
@@ -430,6 +454,16 @@ spec:
                   fieldPath: metadata.uid
             - name: DOMAIN
               value: ${DOMAIN}
+          # The container ran unbounded, so a heavy graph could consume the whole
+          # node. Large flows (48-126 vertices carrying ~1Mi payloads) peak near
+          # 4Gi, which is 80% of this limit.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1536Mi
+            limits:
+              cpu: "2"
+              memory: 5Gi
       imagePullSecrets:
         - name: regcred${DOMAIN}
 ---
@@ -466,6 +500,15 @@ spec:
             - name: reporter
               image: harbor.727th.com/docker-registry/langflow:${IMAGE_TAG}
               imagePullPolicy: IfNotPresent
+              # Standard-library reader over the FalkorDB ledger; it summarises at
+              # most 20 rows, so peak stays far below 80% of this limit.
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 250m
+                  memory: 512Mi
               command:
                 - python3.14
                 - /usr/local/bin/langflow-run-status-reporter
