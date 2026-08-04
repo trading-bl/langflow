@@ -64,6 +64,16 @@ stringData:
   EMAIL_API_KEY: "${EMAIL_API_KEY}"
   EMAIL_RECIPIENT: "${EMAIL_RECIPIENT}"
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: langflow-progress${DOMAIN}
+  namespace: langflow
+type: Opaque
+stringData:
+  # Guards the progress gateway's ingest and stream endpoints.
+  PROGRESS_API_KEY: "${PROGRESS_API_KEY}"
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -454,6 +464,13 @@ spec:
                   fieldPath: metadata.uid
             - name: DOMAIN
               value: ${DOMAIN}
+            - name: PROGRESS_ENDPOINT
+              value: http://langflow-progress.langflow.svc.cluster.local:8900/api/progress
+            - name: PROGRESS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-progress${DOMAIN}
+                  key: PROGRESS_API_KEY
           # The container ran unbounded, so a heavy graph could consume the whole
           # node. Large flows (48-126 vertices carrying ~1Mi payloads) peak near
           # 4Gi, which is 80% of this limit.
@@ -507,8 +524,8 @@ spec:
                   cpu: 50m
                   memory: 96Mi
                 limits:
-                  cpu: 250m
-                  memory: 256Mi
+                  cpu: 150m
+                  memory: 128Mi
               command:
                 - python3.14
                 - /usr/local/bin/langflow-run-status-reporter
@@ -614,5 +631,114 @@ spec:
           port: 80
       middlewares:
         - name: oauth2-proxy-middleware
+  tls:
+    secretName: ${DOMAIN}-com-tls
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langflow-progress
+  namespace: langflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langflow-progress
+  template:
+    metadata:
+      labels:
+        app: langflow-progress
+    spec:
+      containers:
+        - name: progress
+          image: harbor.727th.com/docker-registry/langflow:${IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3.14
+            - /usr/local/bin/langflow-progress-gateway
+          ports:
+            - name: http
+              containerPort: 8900
+          env:
+            - name: PROGRESS_PORT
+              value: "8900"
+            - name: PROGRESS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-progress${DOMAIN}
+                  key: PROGRESS_API_KEY
+            # Progress events live in Redis streams inside FalkorDB, separate keys
+            # from the graph itself, trimmed to the most recent 20k per run.
+            - name: PROGRESS_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: langflow-falkordb${DOMAIN}
+                  key: FALKORDB_URL
+            - name: LANGFLOW_INTERNAL_URL
+              value: http://langflow.langflow.svc.cluster.local:80
+            - name: LANGFLOW_API_KEY
+              value: "${LANGFLOW_PROGRESS_WATCH_KEY}"
+            # Vertex-level progress for these flows is captured with no flow edits.
+            - name: PROGRESS_WATCH_FLOW_IDS
+              value: "${PROGRESS_WATCH_FLOW_IDS}"
+            - name: PROGRESS_POLL_SECONDS
+              value: "15"
+          # Small FastAPI fan-out; measured peak stays well under 80% of this.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 4
+      imagePullSecrets:
+        - name: regcred${DOMAIN}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langflow-progress
+  namespace: langflow
+spec:
+  ports:
+    - name: http
+      port: 8900
+      targetPort: http
+      protocol: TCP
+  selector:
+    app: langflow-progress
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: langflow-progress-ingress
+  namespace: langflow
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    # SSE and WebSocket both authenticate with the x-api-key header, so this host
+    # is not put behind the browser OAuth middleware.
+    - match: Host(`langflow-progress.${DOMAIN}.com`)
+      kind: Rule
+      services:
+        - name: langflow-progress
+          port: 8900
   tls:
     secretName: ${DOMAIN}-com-tls

@@ -138,8 +138,10 @@ RUN mkdir -p /app/.npm /opt/app-root/src/.npm \
 
 COPY ./docker/langflow-entrypoint.sh /usr/local/bin/langflow-entrypoint
 COPY ./deploy/langflow_run_status_reporter.py /usr/local/bin/langflow-run-status-reporter
+COPY ./deploy/langflow_progress_gateway.py /usr/local/bin/langflow-progress-gateway
 RUN chmod 0555 /usr/local/bin/langflow-entrypoint
 RUN chmod 0555 /usr/local/bin/langflow-run-status-reporter
+RUN chmod 0555 /usr/local/bin/langflow-progress-gateway
 
 LABEL org.opencontainers.image.title=langflow
 LABEL org.opencontainers.image.authors=['Langflow']
