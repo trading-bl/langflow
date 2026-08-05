@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 HEARTBEAT_SECONDS = 15
 STREAM_MAX_LEN = 20000
 RUN_INDEX_KEY = "progress:runs"
+FIREHOSE_RUN_ID = "all"
 RUN_TTL_SECONDS = 14 * 24 * 3600
 BLOCK_MILLISECONDS = 2000
 HTTP_OK = 200
@@ -113,6 +114,13 @@ class ProgressStore:
         event_id = await client.xadd(stream, payload, maxlen=STREAM_MAX_LEN, approximate=True)
         await client.expire(stream, RUN_TTL_SECONDS)
 
+        # Mirror into a firehose so one connection can watch everything at once:
+        # domain milestones and vertex events otherwise live in separate streams.
+        if event.run_id != FIREHOSE_RUN_ID:
+            firehose = _stream_key(FIREHOSE_RUN_ID)
+            await client.xadd(firehose, payload, maxlen=STREAM_MAX_LEN, approximate=True)
+            await client.expire(firehose, RUN_TTL_SECONDS)
+
         state = {
             "run_id": event.run_id,
             "workflow": event.workflow,
@@ -127,7 +135,8 @@ class ProgressStore:
         }
         await client.hset(_state_key(event.run_id), mapping=state)
         await client.expire(_state_key(event.run_id), RUN_TTL_SECONDS)
-        await client.zadd(RUN_INDEX_KEY, {event.run_id: time.time()})
+        if event.run_id != FIREHOSE_RUN_ID:
+            await client.zadd(RUN_INDEX_KEY, {event.run_id: time.time()})
         return event_id
 
     async def history(self, run_id: str, after_id: str = "0-0", count: int = 500) -> list[tuple[str, dict[str, str]]]:
@@ -225,10 +234,11 @@ async def list_runs(limit: int = Query(default=50, ge=1, le=200), _: bool = Depe
 async def run_snapshot(run_id: str, _: bool = Depends(require_key)) -> JSONResponse:
     client = await store.client()
     state = await client.hgetall(_state_key(run_id))
-    if not state:
-        raise HTTPException(status_code=404, detail="Unknown run id.")
     rows = await store.history(run_id, "0-0", count=1000)
-    return JSONResponse({"state": state, "events": [_decode(i, f) for i, f in rows]})
+    # the firehose has no state hash of its own, and a run mid-write may not have one yet
+    if not state and not rows:
+        raise HTTPException(status_code=404, detail="Unknown run id.")
+    return JSONResponse({"state": state or {"run_id": run_id}, "events": [_decode(i, f) for i, f in rows]})
 
 
 @app.get("/api/runs/{run_id}/events")
@@ -247,6 +257,9 @@ async def run_events(
             for event_id, fields in await store.history(run_id, cursor):
                 cursor = event_id
                 yield f"id: {event_id}\nevent: progress\ndata: {json.dumps(_decode(event_id, fields), ensure_ascii=False)}\n\n"
+        elif not last_event_id:
+            # replay=false means live-only; "$" tails from now instead of the stream start
+            cursor = "$"
         yield f": replay-complete {_now()}\n\n"
         last_beat = time.monotonic()
         async for item in store.tail(run_id, cursor):
