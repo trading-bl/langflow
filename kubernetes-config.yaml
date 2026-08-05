@@ -681,6 +681,11 @@ spec:
             # Vertex-level progress for these flows is captured with no flow edits.
             - name: PROGRESS_WATCH_FLOW_IDS
               value: "${PROGRESS_WATCH_FLOW_IDS}"
+            # Flows the dashboard's play button can start.
+            - name: RESEARCH_FLOW_ID
+              value: 89a0758f-ebc3-4825-b9ad-f52479048f02
+            - name: REGIME_FLOW_ID
+              value: cb924de7-8972-4722-88af-5e7c2dd02683
             - name: PROGRESS_POLL_SECONDS
               value: "15"
           # Small FastAPI fan-out; measured peak stays well under 80% of this.

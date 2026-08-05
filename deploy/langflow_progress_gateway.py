@@ -280,6 +280,91 @@ def _age_minutes(stamp: Any) -> float | None:
     return round((datetime.now(timezone.utc) - parsed).total_seconds() / 60.0, 1)
 
 
+class RunRequest(BaseModel):
+    flow: str = Field(default="research", max_length=40)
+    input_value: str = Field(default="", max_length=2000)
+
+
+def _flow_ids() -> dict[str, str]:
+    return {
+        "research": os.getenv("RESEARCH_FLOW_ID", ""),
+        "regime": os.getenv("REGIME_FLOW_ID", ""),
+    }
+
+
+def _job_key(flow: str) -> str:
+    return f"progress:activejob:{flow}"
+
+
+@app.post("/api/run")
+async def start_run(request: RunRequest, _: bool = Depends(require_key)) -> JSONResponse:
+    """Start a flow, cancelling whatever run of it is already going.
+
+    Two long runs of the same flow would fight over the same LiteLLM capacity and both
+    degrade, so pressing play replaces the current run rather than racing it.
+    """
+    flow_id = _flow_ids().get(request.flow, "")
+    if not flow_id:
+        raise HTTPException(status_code=400, detail=f"Unknown flow '{request.flow}'.")
+
+    base = os.getenv("LANGFLOW_INTERNAL_URL", "http://langflow.langflow.svc.cluster.local:80")
+    headers = {"x-api-key": os.getenv("LANGFLOW_API_KEY", ""), "Content-Type": "application/json"}
+    client_store = await store.client()
+    previous = await client_store.get(_job_key(request.flow))
+
+    stopped = None
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        if previous:
+            try:
+                status_response = await client.get(f"{base}/api/v2/workflows", params={"job_id": previous}, headers=headers)
+                running = status_response.status_code == HTTP_OK and str(
+                    (status_response.json() or {}).get("status")
+                ) in {"queued", "in_progress", "running"}
+            except Exception:
+                running = False
+            if running:
+                try:
+                    stop_response = await client.post(
+                        f"{base}/api/v2/workflows/stop", headers=headers, json={"job_id": previous}
+                    )
+                    stopped = {"job_id": previous, "ok": stop_response.status_code == HTTP_OK}
+                except Exception as exc:
+                    stopped = {"job_id": previous, "ok": False, "error": str(exc)[:160]}
+
+        try:
+            started = await client.post(
+                f"{base}/api/v2/workflows",
+                headers=headers,
+                json={
+                    "flow_id": flow_id,
+                    "mode": "background",
+                    "input_value": request.input_value or f"Run requested from the dashboard ({request.flow}).",
+                },
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not reach Langflow: {str(exc)[:160]}") from exc
+
+    if started.status_code < HTTP_OK or started.status_code >= HTTP_REDIRECT:
+        raise HTTPException(status_code=502, detail=f"Langflow returned {started.status_code}: {started.text[:200]}")
+
+    job_id = str((started.json() or {}).get("job_id") or "")
+    if job_id:
+        await client_store.set(_job_key(request.flow), job_id, ex=RUN_TTL_SECONDS)
+
+    await store.publish(
+        ProgressEvent(
+            run_id=f"flow:{flow_id}",
+            workflow=request.flow,
+            stage="run requested",
+            status="running",
+            detail=("replaced the previous run" if stopped and stopped.get("ok") else "started from the dashboard"),
+            source="dashboard",
+            data={"flow_id": flow_id, "job_id": job_id, "stopped": stopped},
+        )
+    )
+    return JSONResponse({"started": True, "flow": request.flow, "job_id": job_id, "stopped": stopped})
+
+
 @app.get("/api/state")
 async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
     """One small snapshot for dashboards: where the research run is, what it likes, and the regime.
