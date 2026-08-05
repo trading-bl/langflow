@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import time
@@ -30,7 +31,7 @@ import redis.asyncio as redis
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 HEARTBEAT_SECONDS = 15
@@ -141,6 +142,17 @@ class ProgressStore:
         await client.expire(_state_key(event.run_id), RUN_TTL_SECONDS)
         if event.run_id != FIREHOSE_RUN_ID:
             await client.zadd(RUN_INDEX_KEY, {event.run_id: time.time()})
+
+        # Interim candidates ride along on component milestones. Keeping only the newest
+        # list per run means the dashboard reads one small key instead of replaying events.
+        candidates = (event.data or {}).get("candidates")
+        if isinstance(candidates, list) and candidates:
+            await client.set(
+                f"progress:candidates:{event.run_id}",
+                json.dumps(candidates[:8], ensure_ascii=False),
+                ex=RUN_TTL_SECONDS,
+            )
+            await client.set("progress:candidates:latest", event.run_id, ex=RUN_TTL_SECONDS)
 
         # Bind flow -> current run so the vertex watcher can file its events under the
         # same run id a component reports, instead of a separate flow:<id> stream.
@@ -366,7 +378,11 @@ async def start_run(request: RunRequest, _: bool = Depends(require_key)) -> JSON
 
 
 @app.get("/api/state")
-async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
+async def engine_state(
+    request: Request,
+    if_none_match: str = Header(default=None, alias="If-None-Match"),
+    _: bool = Depends(require_key),
+) -> JSONResponse:
     """One small snapshot for dashboards: where the research run is, what it likes, and the regime.
 
     Deliberately compact — a dashboard should be able to poll this without paying for the
@@ -452,8 +468,18 @@ async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
     live = await store.runs(6)
     active = next((r for r in live if str(r.get("status")) not in {"completed", "failed"}), live[0] if live else {})
 
-    return JSONResponse(
-        {
+    # Interim picks: what the run currently likes, before the decision gate.
+    candidates = []
+    latest_candidate_run = await client.get("progress:candidates:latest")
+    for key in (run.get("run_id"), latest_candidate_run):
+        if not key:
+            continue
+        stored = await client.get(f"progress:candidates:{key}")
+        if stored:
+            candidates = _loads(stored, [])
+            break
+
+    body = {
             "generated_at": _now(),
             "research_run": {
                 "run_id": run.get("run_id"),
@@ -471,6 +497,7 @@ async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
             },
             "recommendations": picks,
             "shortlist": shortlist,
+            "candidates": candidates,
             "results_from": {
                 "run_id": results.get("run_id"),
                 "completed_at": results.get("completed_at"),
@@ -502,8 +529,14 @@ async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
                 "status": active.get("status"),
                 "updated_at": active.get("updated_at"),
             },
-        }
-    )
+    }
+    # generated_at changes every call, so the tag is built from the meaningful fields only:
+    # an unchanged engine answers 304 and the dashboard re-renders nothing.
+    signature = json.dumps({k: v for k, v in body.items() if k != "generated_at"}, sort_keys=True, default=str)
+    etag = '"' + hashlib.sha256(signature.encode()).hexdigest()[:32] + '"'
+    if if_none_match and if_none_match == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
+    return JSONResponse(body, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
 
 @app.get("/api/runs/{run_id}")
@@ -523,6 +556,7 @@ async def run_events(
     request: Request,
     last_event_id: str = Header(default=None, alias="Last-Event-ID"),
     replay: bool = Query(default=True),
+    source: str = Query(default="", description="Only forward events from this source, e.g. 'component'."),
     _: bool = Depends(require_key),
 ) -> StreamingResponse:
     """SSE with replay from Last-Event-ID and a heartbeat that keeps proxies from idling out."""
@@ -532,7 +566,10 @@ async def run_events(
         if replay:
             for event_id, fields in await store.history(run_id, cursor):
                 cursor = event_id
-                yield f"id: {event_id}\nevent: progress\ndata: {json.dumps(_decode(event_id, fields), ensure_ascii=False)}\n\n"
+                decoded = _decode(event_id, fields)
+                if source and str(decoded.get("source")) != source:
+                    continue
+                yield f"id: {event_id}\nevent: progress\ndata: {json.dumps(decoded, ensure_ascii=False)}\n\n"
         elif not last_event_id:
             # replay=false means live-only; "$" tails from now instead of the stream start
             cursor = "$"
@@ -547,8 +584,11 @@ async def run_events(
                     yield f": heartbeat {_now()}\n\n"
                 continue
             event_id, fields = item
-            last_beat = time.monotonic()
             decoded = _decode(event_id, fields)
+            # A filtered subscriber still needs heartbeats, so only the payload is skipped.
+            if source and str(decoded.get("source")) != source:
+                continue
+            last_beat = time.monotonic()
             yield f"id: {event_id}\nevent: progress\ndata: {json.dumps(decoded, ensure_ascii=False)}\n\n"
             if decoded.get("status") in {"completed", "failed", "cancelled"} and decoded.get("stage") == "run":
                 yield f"event: end\ndata: {json.dumps(decoded, ensure_ascii=False)}\n\n"
