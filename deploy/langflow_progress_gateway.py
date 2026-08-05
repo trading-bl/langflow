@@ -51,6 +51,10 @@ def _stream_key(run_id: str) -> str:
     return f"progress:run:{run_id}"
 
 
+def _flow_run_key(flow_id: str) -> str:
+    return f"progress:flowrun:{flow_id}"
+
+
 def _state_key(run_id: str) -> str:
     return f"progress:state:{run_id}"
 
@@ -137,7 +141,17 @@ class ProgressStore:
         await client.expire(_state_key(event.run_id), RUN_TTL_SECONDS)
         if event.run_id != FIREHOSE_RUN_ID:
             await client.zadd(RUN_INDEX_KEY, {event.run_id: time.time()})
+
+        # Bind flow -> current run so the vertex watcher can file its events under the
+        # same run id a component reports, instead of a separate flow:<id> stream.
+        flow_id = str((event.data or {}).get("flow_id") or "")
+        if flow_id and event.source == "component" and not event.run_id.startswith("flow:"):
+            await client.set(_flow_run_key(flow_id), event.run_id, ex=RUN_TTL_SECONDS)
         return event_id
+
+    async def run_for_flow(self, flow_id: str) -> str | None:
+        client = await self.client()
+        return await client.get(_flow_run_key(flow_id))
 
     async def history(self, run_id: str, after_id: str = "0-0", count: int = 500) -> list[tuple[str, dict[str, str]]]:
         client = await self.client()
@@ -359,9 +373,10 @@ class LangflowWatcher:
                         if not vertex or self.seen.get(marker):
                             continue
                         self.seen[marker] = stamp
+                        bound = await store.run_for_flow(flow_id)
                         await store.publish(
                             ProgressEvent(
-                                run_id=f"flow:{flow_id}",
+                                run_id=bound or f"flow:{flow_id}",
                                 workflow=flow_id,
                                 stage=vertex,
                                 status="completed" if row.get("status") == "success" else str(row.get("status") or ""),
