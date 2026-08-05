@@ -296,15 +296,24 @@ async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
         except Exception:
             return []
 
+    # Two kinds of ResearchRun node exist: checkpointed progress rows and result rows written
+    # at the end. Querying one ordered list picks whichever sorts first and yields nulls, so
+    # progress and results are fetched separately.
     run_rows = await query(
-        "MATCH (r:ResearchRun) RETURN r.run_id AS run_id, r.status AS status, r.stage AS stage, "
+        "MATCH (r:ResearchRun) WHERE r.last_checkpoint_at IS NOT NULL "
+        "RETURN r.run_id AS run_id, r.status AS status, r.stage AS stage, "
         "r.percent_complete AS percent, r.completed_batches AS completed_batches, "
         "r.total_batches AS total_batches, r.completed_stocks AS completed_stocks, "
         "r.total_stocks AS total_stocks, r.started_at AS started_at, "
         "r.last_checkpoint_at AS last_checkpoint_at, r.completed_at AS completed_at, "
-        "r.detail AS detail, r.error AS error, r.top_three_json AS top_three_json, "
-        "r.top_five_json AS top_five_json, r.subject AS subject "
+        "r.detail AS detail, r.error AS error "
         "ORDER BY r.last_checkpoint_at DESC LIMIT 1"
+    )
+    result_rows = await query(
+        "MATCH (r:ResearchRun) WHERE r.top_five_json IS NOT NULL "
+        "RETURN r.run_id AS run_id, r.completed_at AS completed_at, r.subject AS subject, "
+        "r.top_three_json AS top_three_json, r.top_five_json AS top_five_json "
+        "ORDER BY r.completed_at DESC LIMIT 1"
     )
     regime_rows = await query(
         "MATCH (m:MacroRegime) RETURN m.run_id AS run_id, m.as_of AS as_of, "
@@ -317,8 +326,9 @@ async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
     )
 
     run = run_rows[0] if run_rows else {}
+    results = result_rows[0] if result_rows else {}
     picks = []
-    for item in _loads(run.get("top_three_json"), [])[:3]:
+    for item in _loads(results.get("top_three_json"), [])[:3]:
         if not isinstance(item, dict):
             continue
         stock = item.get("stock") if isinstance(item.get("stock"), dict) else {}
@@ -332,7 +342,7 @@ async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
             }
         )
     shortlist = []
-    for item in _loads(run.get("top_five_json"), [])[:5]:
+    for item in _loads(results.get("top_five_json"), [])[:5]:
         if isinstance(item, dict):
             stock = item.get("stock") if isinstance(item.get("stock"), dict) else {}
             ticker = (item.get("ticker") or stock.get("ticker") or "").upper()
@@ -373,6 +383,12 @@ async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
             },
             "recommendations": picks,
             "shortlist": shortlist,
+            "results_from": {
+                "run_id": results.get("run_id"),
+                "completed_at": results.get("completed_at"),
+                "age_minutes": _age_minutes(results.get("completed_at")),
+                "subject": str(results.get("subject") or "")[:160] or None,
+            },
             "regime": {
                 "run_id": regime.get("run_id"),
                 "as_of": regime.get("as_of"),
