@@ -400,8 +400,11 @@ async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
         "r.top_three_json AS top_three_json, r.top_five_json AS top_five_json "
         "ORDER BY r.completed_at DESC LIMIT 1"
     )
+    # Defensive: a degraded run may have left a blank snapshot behind, so read the most
+    # recent one that actually carries a headline rather than simply the newest row.
     regime_rows = await query(
-        "MATCH (m:MacroRegime) RETURN m.run_id AS run_id, m.as_of AS as_of, "
+        "MATCH (m:MacroRegime) WHERE m.headline_state IS NOT NULL AND m.headline_state <> '' "
+        "RETURN m.run_id AS run_id, m.as_of AS as_of, "
         "m.headline_state AS headline_state, m.overall_confidence AS confidence, "
         "m.liquidity_regime AS liquidity, m.credit_regime AS credit, "
         "m.inflation_regime AS inflation, m.growth_regime AS growth, m.market_regime AS market, "
