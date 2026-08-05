@@ -244,6 +244,164 @@ async def list_runs(limit: int = Query(default=50, ge=1, le=200), _: bool = Depe
     return JSONResponse({"runs": await store.runs(limit)})
 
 
+def _graph_name() -> str:
+    import re as _re
+
+    return _re.sub(r"[^A-Za-z0-9_]", "_", os.getenv("FALKORDB_GRAPH_NAME", "undervalued_stocks_knowledge"))
+
+
+def _rows(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list) or len(raw) < 2:  # noqa: PLR2004
+        return []
+    headers, rows = raw[0], raw[1]
+    if isinstance(headers, list) and len(headers) == 1 and isinstance(headers[0], list):
+        headers = headers[0]
+    if not isinstance(headers, list) or not isinstance(rows, list):
+        return []
+    if rows and not isinstance(rows[0], (list, tuple)):
+        rows = [rows]
+    return [dict(zip(headers, row, strict=False)) for row in rows if isinstance(row, (list, tuple))]
+
+
+def _loads(value: Any, default: Any) -> Any:
+    try:
+        parsed = json.loads(str(value or ""))
+    except (json.JSONDecodeError, TypeError):
+        return default
+    return parsed if isinstance(parsed, type(default)) else default
+
+
+def _age_minutes(stamp: Any) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    parsed = parsed.replace(tzinfo=parsed.tzinfo or timezone.utc)
+    return round((datetime.now(timezone.utc) - parsed).total_seconds() / 60.0, 1)
+
+
+@app.get("/api/state")
+async def engine_state(_: bool = Depends(require_key)) -> JSONResponse:
+    """One small snapshot for dashboards: where the research run is, what it likes, and the regime.
+
+    Deliberately compact — a dashboard should be able to poll this without paying for the
+    full event history or the megabyte-scale run payloads.
+    """
+    client = await store.client()
+    graph = _graph_name()
+
+    async def query(statement: str) -> list[dict[str, Any]]:
+        try:
+            return _rows(await client.execute_command("GRAPH.QUERY", graph, statement))
+        except Exception:
+            return []
+
+    run_rows = await query(
+        "MATCH (r:ResearchRun) RETURN r.run_id AS run_id, r.status AS status, r.stage AS stage, "
+        "r.percent_complete AS percent, r.completed_batches AS completed_batches, "
+        "r.total_batches AS total_batches, r.completed_stocks AS completed_stocks, "
+        "r.total_stocks AS total_stocks, r.started_at AS started_at, "
+        "r.last_checkpoint_at AS last_checkpoint_at, r.completed_at AS completed_at, "
+        "r.detail AS detail, r.error AS error, r.top_three_json AS top_three_json, "
+        "r.top_five_json AS top_five_json, r.subject AS subject "
+        "ORDER BY r.last_checkpoint_at DESC LIMIT 1"
+    )
+    regime_rows = await query(
+        "MATCH (m:MacroRegime) RETURN m.run_id AS run_id, m.as_of AS as_of, "
+        "m.headline_state AS headline_state, m.overall_confidence AS confidence, "
+        "m.liquidity_regime AS liquidity, m.credit_regime AS credit, "
+        "m.inflation_regime AS inflation, m.growth_regime AS growth, m.market_regime AS market, "
+        "m.confirmed_group_count AS confirmed_groups, "
+        "m.recession_warning_supported AS recession_warning, m.horizons_json AS horizons_json "
+        "ORDER BY m.as_of DESC LIMIT 1"
+    )
+
+    run = run_rows[0] if run_rows else {}
+    picks = []
+    for item in _loads(run.get("top_three_json"), [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        stock = item.get("stock") if isinstance(item.get("stock"), dict) else {}
+        picks.append(
+            {
+                "rank": item.get("rank"),
+                "ticker": (item.get("ticker") or stock.get("ticker") or "").upper(),
+                "company": stock.get("company") or item.get("company") or "",
+                "score": item.get("weighted_score"),
+                "status": item.get("selection_status"),
+            }
+        )
+    shortlist = []
+    for item in _loads(run.get("top_five_json"), [])[:5]:
+        if isinstance(item, dict):
+            stock = item.get("stock") if isinstance(item.get("stock"), dict) else {}
+            ticker = (item.get("ticker") or stock.get("ticker") or "").upper()
+            if ticker:
+                shortlist.append(ticker)
+
+    regime = regime_rows[0] if regime_rows else {}
+    horizons = {}
+    for horizon, record in (_loads(regime.get("horizons_json"), {}) or {}).items():
+        if not isinstance(record, dict):
+            continue
+        probabilities = record.get("state_probabilities") or {}
+        horizons[horizon] = {
+            "state": record.get("most_likely_state"),
+            "probability": max(probabilities.values()) if probabilities else None,
+            "confidence": (record.get("confidence") or {}).get("band"),
+        }
+
+    live = await store.runs(6)
+    active = next((r for r in live if str(r.get("status")) not in {"completed", "failed"}), live[0] if live else {})
+
+    return JSONResponse(
+        {
+            "generated_at": _now(),
+            "research_run": {
+                "run_id": run.get("run_id"),
+                "status": run.get("status"),
+                "stage": run.get("stage"),
+                "detail": str(run.get("detail") or "")[:280],
+                "percent": run.get("percent"),
+                "batches": {"completed": run.get("completed_batches"), "total": run.get("total_batches")},
+                "stocks": {"completed": run.get("completed_stocks"), "total": run.get("total_stocks")},
+                "started_at": run.get("started_at"),
+                "last_checkpoint_at": run.get("last_checkpoint_at"),
+                "checkpoint_age_minutes": _age_minutes(run.get("last_checkpoint_at")),
+                "completed_at": run.get("completed_at"),
+                "error": str(run.get("error") or "")[:280] or None,
+            },
+            "recommendations": picks,
+            "shortlist": shortlist,
+            "regime": {
+                "run_id": regime.get("run_id"),
+                "as_of": regime.get("as_of"),
+                "age_minutes": _age_minutes(regime.get("as_of")),
+                "headline_state": regime.get("headline_state"),
+                "confidence": regime.get("confidence"),
+                "labels": {
+                    "liquidity": regime.get("liquidity"),
+                    "credit": regime.get("credit"),
+                    "inflation": regime.get("inflation"),
+                    "growth": regime.get("growth"),
+                    "market": regime.get("market"),
+                },
+                "confirmed_groups": regime.get("confirmed_groups"),
+                "recession_warning_supported": regime.get("recession_warning"),
+                "horizons": horizons,
+            },
+            "live": {
+                "run_id": active.get("run_id"),
+                "workflow": active.get("workflow"),
+                "stage": active.get("stage"),
+                "percent": active.get("percent"),
+                "status": active.get("status"),
+                "updated_at": active.get("updated_at"),
+            },
+        }
+    )
+
+
 @app.get("/api/runs/{run_id}")
 async def run_snapshot(run_id: str, _: bool = Depends(require_key)) -> JSONResponse:
     client = await store.client()
